@@ -23,6 +23,13 @@ class WorkflowImportResponse(BaseModel):
     name: str
     input_schema: List[InputField]
     runtime_config: Dict[str, Any] = Field(default_factory=dict)
+    raw_json: Optional[Dict[str, Any]] = None
+
+
+class WorkflowUpdateRequest(BaseModel):
+    raw_json: Dict[str, Any]
+    name: Optional[str] = None
+    runtime_config: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RunRequest(BaseModel):

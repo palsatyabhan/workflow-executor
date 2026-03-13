@@ -34,6 +34,15 @@ function App() {
     langflow_run_url: "",
     langflow_api_key: ""
   });
+  const [editWorkflowId, setEditWorkflowId] = useState("");
+  const [editEngine, setEditEngine] = useState("n8n");
+  const [editName, setEditName] = useState("");
+  const [editJsonText, setEditJsonText] = useState("");
+  const [editRuntime, setEditRuntime] = useState({
+    n8n_webhook_url: "",
+    langflow_run_url: "",
+    langflow_api_key: ""
+  });
 
   const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
   const [runSchema, setRunSchema] = useState([]);
@@ -49,6 +58,8 @@ function App() {
     register: false,
     importFile: false,
     importJson: false,
+    loadEditWorkflow: false,
+    updateWorkflow: false,
     loadSchema: false,
     run: false,
     deleteWorkflow: false,
@@ -385,6 +396,15 @@ function App() {
     setRunValues({});
     setRunErrors({});
     setRunWorkflowRuntime({});
+    setEditWorkflowId("");
+    setEditEngine("n8n");
+    setEditName("");
+    setEditJsonText("");
+    setEditRuntime({
+      n8n_webhook_url: "",
+      langflow_run_url: "",
+      langflow_api_key: ""
+    });
     setOutputText("");
     setOutputFullText("");
     setShowFullOutput(false);
@@ -504,6 +524,106 @@ function App() {
       langflow_run_url: registerRuntime.langflow_run_url.trim(),
       langflow_api_key: registerRuntime.langflow_api_key.trim()
     };
+  }
+
+  function buildEditRuntimeConfig() {
+    if (editEngine === "n8n") {
+      return {
+        n8n_webhook_url: editRuntime.n8n_webhook_url.trim()
+      };
+    }
+    return {
+      langflow_run_url: editRuntime.langflow_run_url.trim(),
+      langflow_api_key: editRuntime.langflow_api_key.trim()
+    };
+  }
+
+  async function loadWorkflowForEdit() {
+    if (!editWorkflowId) {
+      notify("Select a workflow to edit first.", "error");
+      return;
+    }
+    setBusy((b) => ({ ...b, loadEditWorkflow: true }));
+    try {
+      const workflow = await api(`/api/workflows/${encodeURIComponent(editWorkflowId)}`);
+      setEditEngine(workflow.engine);
+      setEditName(workflow.name || "");
+      setEditJsonText(JSON.stringify(workflow.raw_json || {}, null, 2));
+      setEditRuntime({
+        n8n_webhook_url: workflow.runtime_config?.n8n_webhook_url || "",
+        langflow_run_url: workflow.runtime_config?.langflow_run_url || "",
+        langflow_api_key: workflow.runtime_config?.langflow_api_key || ""
+      });
+      notify("Workflow loaded for editing.", "success");
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy((b) => ({ ...b, loadEditWorkflow: false }));
+    }
+  }
+
+  async function updateEditedWorkflow() {
+    if (!editWorkflowId) {
+      notify("Select a workflow to edit first.", "error");
+      return;
+    }
+    if (!editJsonText.trim()) {
+      notify("Workflow JSON cannot be empty.", "error");
+      return;
+    }
+
+    let parsedJson;
+    try {
+      parsedJson = JSON.parse(editJsonText);
+    } catch {
+      notify("Invalid JSON in editor.", "error");
+      return;
+    }
+
+    const runtimeConfig = buildEditRuntimeConfig();
+    if (editEngine === "n8n" && !runtimeConfig.n8n_webhook_url) {
+      notify("n8n webhook URL is required.", "error");
+      return;
+    }
+    if (editEngine === "langflow") {
+      if (!runtimeConfig.langflow_run_url) {
+        notify("Langflow run URL is required.", "error");
+        return;
+      }
+      if (!runtimeConfig.langflow_api_key) {
+        notify("Langflow API key is required.", "error");
+        return;
+      }
+    }
+
+    setBusy((b) => ({ ...b, updateWorkflow: true }));
+    try {
+      const updated = await api(`/api/workflows/${encodeURIComponent(editWorkflowId)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          raw_json: parsedJson,
+          name: editName.trim() || null,
+          runtime_config: runtimeConfig
+        })
+      });
+      setEditEngine(updated.engine);
+      setEditName(updated.name || "");
+      setEditJsonText(JSON.stringify(updated.raw_json || parsedJson, null, 2));
+      setEditRuntime({
+        n8n_webhook_url: updated.runtime_config?.n8n_webhook_url || "",
+        langflow_run_url: updated.runtime_config?.langflow_run_url || "",
+        langflow_api_key: updated.runtime_config?.langflow_api_key || ""
+      });
+      notify("Workflow updated successfully.", "success");
+      await refreshAll(engineFilter);
+      if (selectedWorkflowId === editWorkflowId) {
+        await loadRunSchema(selectedWorkflowId);
+      }
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy((b) => ({ ...b, updateWorkflow: false }));
+    }
   }
 
   function buildFieldValuesFromSchema(schema, sourceInputs = {}) {
@@ -694,6 +814,17 @@ function App() {
       setRunValues({});
       setRunErrors({});
       setRunWorkflowRuntime({});
+      if (editWorkflowId === selectedWorkflowId) {
+        setEditWorkflowId("");
+        setEditEngine("n8n");
+        setEditName("");
+        setEditJsonText("");
+        setEditRuntime({
+          n8n_webhook_url: "",
+          langflow_run_url: "",
+          langflow_api_key: ""
+        });
+      }
       setOutputText("");
       setOutputFullText("");
       setShowFullOutput(false);
@@ -989,6 +1120,90 @@ function App() {
                     {busy.importJson ? "Registering..." : "Register from JSON"}
                   </button>
                 </div>
+              </div>
+
+              <div className="card">
+                <h3 className="card-title">Edit Existing Workflow</h3>
+                <div className="grid-2">
+                  <div>
+                    <label>Select Workflow</label>
+                    <select value={editWorkflowId} onChange={(e) => setEditWorkflowId(e.target.value)}>
+                      <option value="">Select workflow</option>
+                      {workflows.map((w) => (
+                        <option key={w.workflow_id} value={w.workflow_id}>
+                          {w.name} ({w.engine})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="actions align-end">
+                    <button
+                      className="btn-secondary"
+                      onClick={loadWorkflowForEdit}
+                      disabled={!editWorkflowId || busy.loadEditWorkflow}
+                    >
+                      {busy.loadEditWorkflow ? "Loading..." : "Load for Edit"}
+                    </button>
+                  </div>
+                </div>
+
+                {editWorkflowId ? (
+                  <>
+                    <div className="engine-preview">
+                      <img src={getEngineLogo(editEngine)} alt={editEngine} className="engine-logo" />
+                      <span>{editEngine} workflow</span>
+                    </div>
+                    <label>Workflow Name</label>
+                    <input value={editName} onChange={(e) => setEditName(e.target.value)} />
+
+                    {editEngine === "n8n" ? (
+                      <>
+                        <label>n8n Webhook URL</label>
+                        <input
+                          value={editRuntime.n8n_webhook_url}
+                          onChange={(e) =>
+                            setEditRuntime((r) => ({ ...r, n8n_webhook_url: e.target.value }))
+                          }
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <label>Langflow Run URL</label>
+                        <input
+                          value={editRuntime.langflow_run_url}
+                          onChange={(e) =>
+                            setEditRuntime((r) => ({ ...r, langflow_run_url: e.target.value }))
+                          }
+                        />
+                        <label>Langflow API Key</label>
+                        <input
+                          type="password"
+                          value={editRuntime.langflow_api_key}
+                          onChange={(e) =>
+                            setEditRuntime((r) => ({ ...r, langflow_api_key: e.target.value }))
+                          }
+                        />
+                      </>
+                    )}
+
+                    <label>Edit Workflow JSON</label>
+                    <textarea value={editJsonText} onChange={(e) => setEditJsonText(e.target.value)} />
+                    <div className="actions">
+                      <button
+                        className="btn-primary"
+                        onClick={updateEditedWorkflow}
+                        disabled={busy.updateWorkflow}
+                      >
+                        {busy.updateWorkflow ? "Saving..." : "Save Workflow Changes"}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty-state output-empty">
+                    <div className="empty-title">No workflow selected for edit</div>
+                    <div className="meta">Select a workflow and click "Load for Edit" to modify JSON or config.</div>
+                  </div>
+                )}
               </div>
             </section>
           )}

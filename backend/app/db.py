@@ -332,6 +332,37 @@ def get_workflow(user_id: int, workflow_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def update_workflow(
+    user_id: int,
+    workflow_id: str,
+    name: str,
+    raw_json: Dict[str, Any],
+    input_schema: List[Dict[str, Any]],
+    runtime_config: Dict[str, Any],
+) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE workflows
+        SET name = ?, raw_json = ?, input_schema = ?, runtime_config_json = ?
+        WHERE user_id = ? AND id = ?
+        """,
+        (
+            name,
+            json.dumps(raw_json),
+            json.dumps(input_schema),
+            json.dumps(runtime_config),
+            user_id,
+            workflow_id,
+        ),
+    )
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
 def delete_workflow(user_id: int, workflow_id: str) -> bool:
     conn = get_conn()
     cur = conn.cursor()

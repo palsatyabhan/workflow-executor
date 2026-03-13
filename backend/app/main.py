@@ -30,6 +30,7 @@ from .db import (
     list_workflows,
     save_execution,
     save_workflow,
+    update_workflow,
     update_execution,
 )
 from .models import (
@@ -43,6 +44,7 @@ from .models import (
     UserInfo,
     WorkflowImportResponse,
     WorkflowListItem,
+    WorkflowUpdateRequest,
 )
 from .parsers import detect_engine, extract_input_schema, extract_name
 from .runners import run_workflow
@@ -423,6 +425,55 @@ async def get_workflow_by_id(
         name=row["name"],
         input_schema=row["input_schema"],
         runtime_config=row.get("runtime_config", {}),
+        raw_json=row.get("raw_json"),
+    )
+
+
+@app.put("/api/workflows/{workflow_id}", response_model=WorkflowImportResponse)
+async def edit_workflow(
+    workflow_id: str,
+    request: WorkflowUpdateRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> WorkflowImportResponse:
+    existing = get_workflow(int(current_user["user_id"]), workflow_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    if not isinstance(request.raw_json, dict):
+        raise HTTPException(status_code=400, detail="raw_json must be a JSON object.")
+
+    try:
+        detected_engine = detect_engine(request.raw_json)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if detected_engine != existing["engine"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Edited JSON is detected as '{detected_engine}', expected '{existing['engine']}'.",
+        )
+
+    name = request.name.strip() if request.name else extract_name(request.raw_json, detected_engine)
+    input_schema = extract_input_schema(request.raw_json, detected_engine)
+    normalized_runtime = _normalize_runtime_config(request.runtime_config or {})
+    _validate_runtime_config(detected_engine, normalized_runtime)
+
+    updated = update_workflow(
+        user_id=int(current_user["user_id"]),
+        workflow_id=workflow_id,
+        name=name,
+        raw_json=request.raw_json,
+        input_schema=[item.model_dump() for item in input_schema],
+        runtime_config=normalized_runtime,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+
+    return WorkflowImportResponse(
+        workflow_id=workflow_id,
+        engine=detected_engine,
+        name=name,
+        input_schema=input_schema,
+        runtime_config=normalized_runtime,
+        raw_json=request.raw_json,
     )
 
 
