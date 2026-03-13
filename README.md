@@ -1,30 +1,44 @@
 # Workflow Runtime Studio (n8n + Langflow)
 
-This project is a starter for an enterprise-style platform where users can:
-
-1. Upload an `n8n` or `Langflow` workflow JSON
-2. Auto-generate a runnable input UI from detected variables
-3. Run the workflow with user-provided inputs
-4. Capture execution output and status
+Enterprise-style workflow control plane for registering, executing, and tracking `n8n` and `Langflow` JSON workflows with auth, runtime configuration, and execution governance.
 
 ## What is implemented
 
-- FastAPI backend with:
-  - User register/login/logout
-  - SQLite persistence for users, workflows, sessions, and executions
-  - Workflow import endpoint
-  - Engine auto-detection (`n8n` / `langflow`)
-  - Input schema extraction from JSON
-  - Unified run endpoint
-  - Workflow list and run history endpoints
-- Web UI (React + Vite) with:
-  - Home/product section
-  - Login/Register forms
-  - JSON upload and JSON paste import options
-  - Engine filter and old imported workflow list
-  - Run history list with output preview
-  - Auto-generated form fields
-  - Run action and output viewer
+### Backend (FastAPI + SQLite)
+
+- Session auth: register, login, logout, current-user profile.
+- Workflow registry:
+  - import from file upload or raw JSON
+  - engine auto-detection (`n8n` / `langflow`)
+  - extracted input schema persistence
+  - engine-specific runtime config validation at registration time
+- Execution engine:
+  - async run queue behavior with immediate `running` status
+  - live stage tracking (`queued`, `dispatching`, `processing_response`, `completed`, `failed`)
+  - persisted execution audit data (inputs, runtime config, output, status, stage, timestamps)
+- History APIs with filtering and single-execution lookup.
+- Structured request/execution logging with sensitive key masking.
+
+### UI (React + Vite)
+
+- Enterprise dashboard layout with auth flows and workspace navigation.
+- Register workflow page:
+  - upload JSON or paste JSON
+  - conditional runtime fields for n8n vs Langflow
+- Run workflow page:
+  - auto-loaded input schema from selected workflow
+  - dynamic input form rendering
+  - live execution polling for running status/stage
+  - clean output panel (shows empty state when no output exists)
+- History dashboard:
+  - compact table with workflow name + ID
+  - stage + status visibility
+  - filter, search, sorting (including clickable column sorting), pagination
+  - rerun and delete actions
+  - output panel at bottom with processed/full response toggle
+- Branding/icons:
+  - official n8n and Langflow logos integrated across key views
+  - dark/light mode toggle
 
 ## Project structure
 
@@ -37,14 +51,19 @@ backend/
     parsers.py
     runners.py
   requirements.txt
-  app.db
+  app.db                    # created at runtime
 ui/
   package.json
+  package-lock.json
   index.html
   src/
     App.jsx
     main.jsx
     styles.css
+    assets/
+      n8n-logo.svg
+      langflow-logo.svg
+Makefile
 ```
 
 ## Quick start
@@ -56,57 +75,59 @@ make run
 make run-ui
 ```
 
-Open UI: `http://localhost:5173`
+Open UI: `http://localhost:5173`  
 Backend API: `http://localhost:8000`
 
 ## API
 
+### Auth
+
 - `POST /api/auth/register`
-  - JSON body: `{ "username": "...", "email": "...", "password": "..." }`
+  - body: `{ "username": "...", "email": "...", "password": "..." }`
 - `POST /api/auth/login`
-  - JSON body: `{ "username": "...", "password": "..." }`
+  - body: `{ "username": "...", "password": "..." }`
 - `POST /api/auth/logout`
 - `GET /api/auth/me`
 
+### Workflows
+
 - `POST /api/workflows/import`
   - multipart form: `file=<workflow.json>`
-  - multipart form also accepts:
+  - optional runtime fields:
     - `n8n_webhook_url`
     - `langflow_run_url`
     - `langflow_api_key`
-  - returns `{ workflow_id, engine, name, input_schema }`
 - `POST /api/workflows/import-json`
-  - JSON body: `{ "raw_json": {...}, "engine": "n8n|langflow|null", "name": "...", "runtime_config": {...} }`
+  - body:
+    - `{ "raw_json": {...}, "engine": "n8n|langflow|null", "name": "...", "runtime_config": {...} }`
 - `GET /api/workflows?engine=n8n|langflow`
 - `GET /api/workflows/{workflow_id}`
 - `DELETE /api/workflows/{workflow_id}`
+
+### Executions
+
 - `POST /api/workflows/{workflow_id}/run`
-  - JSON body: `{ "inputs": { ... }, "runtime_config": { ... } }`
-  - returns unified execution result
+  - body: `{ "inputs": {...}, "runtime_config": {...} }`
+  - returns queued/running execution envelope with `execution_id`
 - `GET /api/executions?workflow_id=<optional>&engine=<optional n8n|langflow>`
+- `GET /api/executions/{execution_id}`
 - `POST /api/executions/{execution_id}/rerun`
 - `DELETE /api/executions/{execution_id}`
+
+### Health
+
 - `GET /health`
 
-## Enterprise hardening checklist
+## Current execution status model
 
-Use this starter as the runtime layer and add:
+- `running`: execution started and still in progress
+- `success`: external engine returned successful response
+- `failed`: external engine or processing failed
+- `dry_run`: runtime endpoint was not configured, so request was resolved only
 
-- Authentication & authorization (OIDC/SAML, RBAC/ABAC)
-- Multi-tenancy boundaries and per-tenant data isolation
-- Secret vault integration (AWS Secrets Manager / Vault)
-- Persistent storage (Postgres) for workflows + execution history
-- Queue workers (Celery/RQ/Kafka) for long-running executions
-- Retry policies, idempotency keys, circuit breakers
-- Auditing, PII masking, immutable logs
-- Rate limits and WAF
-- Input validation policy and schema versioning
-- Observability (OpenTelemetry traces, metrics, dashboards)
+## Notes
 
-## Important notes
-
-- `n8n` and `Langflow` execution can be done in multiple ways depending on deployment.
-- This starter supports adapter-style execution:
-  - n8n: trigger webhook or custom endpoint
-  - Langflow: call flow endpoint/API
-- If endpoints are not configured, the app returns a dry-run response with resolved inputs.
+- n8n is executed via webhook URL.
+- Langflow is executed via run URL + API key (supports `Authorization` and `x-api-key`).
+- Runtime configuration is stored at registration and reused at run time.
+- Local artifacts (`.app.log`, `.app.pid`, `ui/dist`, `ui/node_modules`, `backend/app.db`) are ignored via `.gitignore`.
