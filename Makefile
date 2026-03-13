@@ -10,7 +10,8 @@ LOG_FILE := .app.log
 HOST := 0.0.0.0
 PORT := 8000
 
-.PHONY: help setup setup-ui run run-ui dev stop restart status logs clean build-ui
+.PHONY: help setup setup-ui run run-ui dev stop restart status logs clean build-ui \
+	docker-up docker-down docker-down-v docker-logs docker-ps docker-rebuild
 
 help:
 	@echo "Available targets:"
@@ -25,6 +26,12 @@ help:
 	@echo "  make status   - Show whether app is running"
 	@echo "  make logs     - Show recent application logs"
 	@echo "  make clean    - Remove PID and log files"
+	@echo "  make docker-up      - Build and start app with Docker Compose"
+	@echo "  make docker-down    - Stop Docker Compose services"
+	@echo "  make docker-down-v  - Stop Docker Compose services and remove volumes"
+	@echo "  make docker-logs    - Follow Docker Compose logs"
+	@echo "  make docker-ps      - Show Docker Compose service status"
+	@echo "  make docker-rebuild - Rebuild Docker image and start services"
 
 setup:
 	@if [ ! -d "$(VENV_DIR)" ]; then \
@@ -122,3 +129,21 @@ dev: run
 
 build-ui:
 	@cd "$(UI_DIR)" && npm run build
+
+docker-up:
+	@docker compose up --build
+
+docker-down:
+	@docker compose down
+
+docker-down-v:
+	@docker compose down -v
+
+docker-logs:
+	@docker compose logs -f
+
+docker-ps:
+	@docker compose ps
+
+docker-rebuild:
+	@docker compose up --build --force-recreate

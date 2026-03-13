@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: workflow-runtime-studio:latest
+    container_name: workflow-runtime-studio
+    ports:
+      - "8000:8000"
+    environment:
+      APP_DB_PATH: /data/app.db
+    volumes:
+      - workflow_data:/data
+    restart: unless-stopped
+
+volumes:
+  workflow_data:

@@ -1,0 +1,16 @@
+.git
+.gitignore
+
+.DS_Store
+.app.log
+.app.pid
+
+backend/.venv
+backend/__pycache__
+backend/app.db
+backend/**/*.pyc
+
+ui/node_modules
+ui/dist
+
+*.log

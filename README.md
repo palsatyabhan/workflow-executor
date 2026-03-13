@@ -78,6 +78,45 @@ make run-ui
 Open UI: `http://localhost:5173`  
 Backend API: `http://localhost:8000`
 
+## Docker
+
+### Build and run with Docker Compose
+
+```bash
+docker compose up --build
+```
+
+App URL: `http://localhost:8000`
+
+This production-style container:
+
+- builds the React UI (`ui/dist`) in a Node build stage
+- runs FastAPI with Uvicorn in a Python runtime stage
+- serves both API and built UI from a single container
+- persists SQLite DB using a named volume (`workflow_data`)
+
+Stop containers:
+
+```bash
+docker compose down
+```
+
+Stop containers and remove persisted DB volume:
+
+```bash
+docker compose down -v
+```
+
+### Makefile shortcuts for Docker
+
+```bash
+make docker-up
+make docker-logs
+make docker-ps
+make docker-down
+make docker-down-v
+```
+
 ## API
 
 ### Auth
@@ -131,3 +170,7 @@ Backend API: `http://localhost:8000`
 - Langflow is executed via run URL + API key (supports `Authorization` and `x-api-key`).
 - Runtime configuration is stored at registration and reused at run time.
 - Local artifacts (`.app.log`, `.app.pid`, `ui/dist`, `ui/node_modules`, `backend/app.db`) are ignored via `.gitignore`.
+
+## License
+
+This project is licensed under the Apache License 2.0. See `LICENSE`.

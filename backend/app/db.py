@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BACKEND_DIR / "app.db"
+DB_PATH = Path(os.getenv("APP_DB_PATH", str(BACKEND_DIR / "app.db")))
 
 
 def utcnow_iso() -> str:
