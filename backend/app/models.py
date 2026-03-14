@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 EngineType = Literal["n8n", "langflow"]
+UserRole = Literal["admin", "runner", "viewer"]
 
 
 class InputField(BaseModel):
@@ -69,12 +70,19 @@ class UserRegisterRequest(BaseModel):
     username: str
     email: str
     password: str
+    role: UserRole = "runner"
 
 
 class UserInfo(BaseModel):
     user_id: int
     username: str
     email: str
+    role: UserRole
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class AuthResponse(BaseModel):

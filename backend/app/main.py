@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .db import (
     authenticate_user,
+    count_users,
     create_session,
     create_user,
     delete_workflow,
@@ -30,11 +31,13 @@ from .db import (
     list_workflows,
     save_execution,
     save_workflow,
+    update_user_password,
     update_workflow,
     update_execution,
 )
 from .models import (
     AuthResponse,
+    ChangePasswordRequest,
     ExecutionHistoryItem,
     ImportJsonRequest,
     RunRequest,
@@ -158,6 +161,12 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> Dic
     return {"token": token, **user}
 
 
+def require_roles(current_user: Dict[str, Any], allowed_roles: set[str]) -> None:
+    role = str(current_user.get("role") or "").strip().lower()
+    if role not in allowed_roles:
+        raise HTTPException(status_code=403, detail="You do not have permission for this action.")
+
+
 @app.post("/api/auth/register", response_model=AuthResponse)
 async def register(request: UserRegisterRequest) -> AuthResponse:
     username = request.username.strip()
@@ -171,11 +180,23 @@ async def register(request: UserRegisterRequest) -> AuthResponse:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
     if get_user_by_email(email):
         raise HTTPException(status_code=409, detail="User already exists.")
+    requested_role = str(request.role or "runner").strip().lower()
+    if requested_role not in {"admin", "runner", "viewer"}:
+        raise HTTPException(status_code=400, detail="Role must be admin, runner, or viewer.")
+    existing_users = count_users()
+    if existing_users > 0 and requested_role == "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin role can only be assigned to the first account.",
+        )
+    assigned_role = "admin" if existing_users == 0 else requested_role
 
     try:
-        user = create_user(username, email, password)
+        user = create_user(username, email, password, assigned_role)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="User already exists.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     token = create_session(user["user_id"])
     return AuthResponse(token=token, user=UserInfo(**user))
@@ -196,6 +217,7 @@ async def me(current_user: Dict[str, Any] = Depends(get_current_user)) -> UserIn
         user_id=int(current_user["user_id"]),
         username=str(current_user["username"]),
         email=str(current_user["email"]),
+        role=str(current_user.get("role") or "viewer"),
     )
 
 
@@ -203,6 +225,24 @@ async def me(current_user: Dict[str, Any] = Depends(get_current_user)) -> UserIn
 async def logout(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
     delete_session(str(current_user["token"]))
     return {"message": "Logged out successfully."}
+
+
+@app.post("/api/auth/change-password")
+async def change_password(
+    request: ChangePasswordRequest, current_user: Dict[str, Any] = Depends(get_current_user)
+) -> Dict[str, str]:
+    current_password = request.current_password.strip()
+    new_password = request.new_password.strip()
+    if not current_password or not new_password:
+        raise HTTPException(status_code=400, detail="Current and new passwords are required.")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters.")
+    if current_password == new_password:
+        raise HTTPException(status_code=400, detail="New password must be different from current password.")
+    updated = update_user_password(int(current_user["user_id"]), current_password, new_password)
+    if not updated:
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    return {"message": "Password changed successfully."}
 
 
 def _import_workflow_payload(
@@ -347,6 +387,7 @@ async def import_workflow_file(
     langflow_api_key: Optional[str] = Form(default=None),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> WorkflowImportResponse:
+    require_roles(current_user, {"admin"})
     logger.info(
         "workflow_import_file_start user_id=%s filename=%s",
         current_user["user_id"],
@@ -382,6 +423,7 @@ async def import_workflow_file(
 async def import_workflow_json(
     request: ImportJsonRequest, current_user: Dict[str, Any] = Depends(get_current_user)
 ) -> WorkflowImportResponse:
+    require_roles(current_user, {"admin"})
     logger.info("workflow_import_json_start user_id=%s", current_user["user_id"])
     if not isinstance(request.raw_json, dict):
         raise HTTPException(status_code=400, detail="raw_json must be a JSON object.")
@@ -408,7 +450,7 @@ async def get_workflows(
 ) -> List[WorkflowListItem]:
     if engine is not None and engine not in {"n8n", "langflow"}:
         raise HTTPException(status_code=400, detail="Engine must be n8n or langflow.")
-    data = list_workflows(int(current_user["user_id"]), engine)
+    data = list_workflows(None, engine)
     return [WorkflowListItem(**item) for item in data]
 
 
@@ -416,7 +458,7 @@ async def get_workflows(
 async def get_workflow_by_id(
     workflow_id: str, current_user: Dict[str, Any] = Depends(get_current_user)
 ) -> WorkflowImportResponse:
-    row = get_workflow(int(current_user["user_id"]), workflow_id)
+    row = get_workflow(None, workflow_id)
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found.")
     return WorkflowImportResponse(
@@ -435,7 +477,8 @@ async def edit_workflow(
     request: WorkflowUpdateRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> WorkflowImportResponse:
-    existing = get_workflow(int(current_user["user_id"]), workflow_id)
+    require_roles(current_user, {"admin"})
+    existing = get_workflow(None, workflow_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Workflow not found.")
     if not isinstance(request.raw_json, dict):
@@ -457,7 +500,7 @@ async def edit_workflow(
     _validate_runtime_config(detected_engine, normalized_runtime)
 
     updated = update_workflow(
-        user_id=int(current_user["user_id"]),
+        user_id=None,
         workflow_id=workflow_id,
         name=name,
         raw_json=request.raw_json,
@@ -481,7 +524,8 @@ async def edit_workflow(
 async def remove_workflow(
     workflow_id: str, current_user: Dict[str, Any] = Depends(get_current_user)
 ) -> Dict[str, str]:
-    removed = delete_workflow(int(current_user["user_id"]), workflow_id)
+    require_roles(current_user, {"admin"})
+    removed = delete_workflow(None, workflow_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Workflow not found.")
     return {"message": "Workflow deleted."}
@@ -491,6 +535,7 @@ async def remove_workflow(
 async def run_imported_workflow(
     workflow_id: str, request: RunRequest, current_user: Dict[str, Any] = Depends(get_current_user)
 ):
+    require_roles(current_user, {"admin", "runner"})
     logger.info(
         "workflow_run_start user_id=%s workflow_id=%s inputs=%s runtime_config=%s",
         current_user["user_id"],
@@ -498,7 +543,7 @@ async def run_imported_workflow(
         _safe_json_str(request.inputs),
         _safe_json_str(_mask_runtime_config(request.runtime_config)),
     )
-    row = get_workflow(int(current_user["user_id"]), workflow_id)
+    row = get_workflow(None, workflow_id)
     if not row:
         raise HTTPException(status_code=404, detail="Workflow not found.")
 
@@ -561,7 +606,7 @@ async def get_executions(
     if engine is not None and engine not in {"n8n", "langflow"}:
         raise HTTPException(status_code=400, detail="Engine must be n8n or langflow.")
     rows = list_executions(
-        int(current_user["user_id"]),
+        None,
         workflow_id=workflow_id,
         engine=engine,
     )
@@ -572,7 +617,7 @@ async def get_executions(
 async def get_execution_by_id(
     execution_id: int, current_user: Dict[str, Any] = Depends(get_current_user)
 ) -> ExecutionHistoryItem:
-    item = get_execution(int(current_user["user_id"]), execution_id)
+    item = get_execution(None, execution_id)
     if not item:
         raise HTTPException(status_code=404, detail="Execution not found.")
     return _to_execution_history_item(item)
@@ -580,11 +625,12 @@ async def get_execution_by_id(
 
 @app.post("/api/executions/{execution_id}/rerun")
 async def rerun_execution(execution_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    require_roles(current_user, {"admin", "runner"})
     logger.info("execution_rerun_start user_id=%s execution_id=%s", current_user["user_id"], execution_id)
-    existing = get_execution(int(current_user["user_id"]), execution_id)
+    existing = get_execution(None, execution_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Execution not found.")
-    workflow_row = get_workflow(int(current_user["user_id"]), existing["workflow_id"])
+    workflow_row = get_workflow(None, existing["workflow_id"])
     if not workflow_row:
         raise HTTPException(status_code=404, detail="Original workflow not found.")
 
@@ -636,7 +682,8 @@ async def rerun_execution(execution_id: int, current_user: Dict[str, Any] = Depe
 
 @app.delete("/api/executions/{execution_id}")
 async def remove_execution(execution_id: int, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, str]:
-    removed = delete_execution(int(current_user["user_id"]), execution_id)
+    require_roles(current_user, {"admin"})
+    removed = delete_execution(None, execution_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Execution not found.")
     return {"message": "Execution deleted."}

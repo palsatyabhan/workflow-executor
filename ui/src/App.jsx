@@ -3,7 +3,7 @@ import langflowLogo from "./assets/langflow-logo.svg";
 import n8nLogo from "./assets/n8n-logo.svg";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
-const EMPTY_REGISTER = { username: "", email: "", password: "" };
+const EMPTY_REGISTER = { username: "", email: "", password: "", role: "runner" };
 const EMPTY_LOGIN = { username: "", password: "" };
 const MASKED_SECRET_MIN_LENGTH = 8;
 
@@ -18,6 +18,10 @@ function App() {
   const [user, setUser] = useState(null);
   const [loginForm, setLoginForm] = useState(EMPTY_LOGIN);
   const [registerForm, setRegisterForm] = useState(EMPTY_REGISTER);
+  const [changePasswordForm, setChangePasswordForm] = useState({
+    current_password: "",
+    new_password: ""
+  });
   const [toast, setToast] = useState({ show: false, type: "info", message: "" });
 
   const [activePage, setActivePage] = useState("register-workflow");
@@ -65,6 +69,7 @@ function App() {
   const [busy, setBusy] = useState({
     login: false,
     register: false,
+    changePassword: false,
     importFile: false,
     importJson: false,
     loadEditWorkflow: false,
@@ -104,6 +109,21 @@ function App() {
     localStorage.setItem("ui_theme", theme);
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
+
+  const userRole = user?.role || "viewer";
+  const canManageWorkflows = userRole === "admin";
+  const canRunWorkflows = userRole === "admin" || userRole === "runner";
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (activePage === "register-workflow" && !canManageWorkflows) {
+      setActivePage(canRunWorkflows ? "run-workflow" : "history-dashboard");
+      return;
+    }
+    if (activePage === "run-workflow" && !canRunWorkflows) {
+      setActivePage("history-dashboard");
+    }
+  }, [isAuthenticated, activePage, canManageWorkflows, canRunWorkflows]);
 
   const statusText = useMemo(() => {
     if (!isAuthenticated) return "Not logged in";
@@ -390,6 +410,28 @@ function App() {
     }
   }
 
+  async function onChangePassword() {
+    if (!changePasswordForm.current_password || !changePasswordForm.new_password) {
+      return notify("Current and new password are required.", "error");
+    }
+    if (changePasswordForm.new_password.length < 6) {
+      return notify("New password must be at least 6 characters.", "error");
+    }
+    setBusy((b) => ({ ...b, changePassword: true }));
+    try {
+      const result = await api("/api/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify(changePasswordForm)
+      });
+      setChangePasswordForm({ current_password: "", new_password: "" });
+      notify(result.message || "Password changed successfully.", "success");
+    } catch (err) {
+      notify(err.message, "error");
+    } finally {
+      setBusy((b) => ({ ...b, changePassword: false }));
+    }
+  }
+
   async function onLogout() {
     try {
       await api("/api/auth/logout", { method: "POST" });
@@ -420,6 +462,7 @@ function App() {
     setOutputFullText("");
     setShowFullOutput(false);
     setSelectedWorkflowId("");
+    setChangePasswordForm({ current_password: "", new_password: "" });
     notify("Logged out.", "success");
   }
 
@@ -896,7 +939,7 @@ function App() {
       </header>
 
       <section className="hero">
-        <h1>Enterprise workflow operations platform for n8n and Langflow</h1>
+        <h1>Unified workflow command center for n8n and Langflow</h1>
         <p>
           Register once, run anytime with auto-detected inputs, and track every execution from a
           central dashboard with rerun and governance controls. Built for faster delivery, fewer
@@ -989,6 +1032,15 @@ function App() {
                 onChange={(e) => setRegisterForm((f) => ({ ...f, password: e.target.value }))}
                 placeholder="minimum 6 chars"
               />
+              <label>Role</label>
+              <select
+                value={registerForm.role}
+                onChange={(e) => setRegisterForm((f) => ({ ...f, role: e.target.value }))}
+              >
+                <option value="runner">runner (run + read)</option>
+                <option value="viewer">viewer (read only)</option>
+                <option value="admin">admin (first account only)</option>
+              </select>
               <div className="actions">
                 <button className="btn-primary" onClick={onRegister} disabled={busy.register}>
                   {busy.register ? "Creating..." : "Create Account"}
@@ -1003,6 +1055,7 @@ function App() {
             <div className="workspace-user">
               <div className="workspace-user-title">Workspace</div>
               <div className="workspace-user-sub">Signed in as {user.username}</div>
+              <div className="workspace-user-sub">Role: {userRole}</div>
               <div className="workspace-engines">
                 <div className="workspace-engine">
                   <img src={n8nLogo} alt="n8n" className="engine-logo sm" />
@@ -1016,20 +1069,24 @@ function App() {
             </div>
 
             <nav className="page-nav vertical">
-              <button
-                className={`nav-btn ${activePage === "register-workflow" ? "active" : ""}`}
-                onClick={() => setActivePage("register-workflow")}
-              >
-                <span className="nav-ico">RG</span>
-                <span>Register Workflow</span>
-              </button>
-              <button
-                className={`nav-btn ${activePage === "run-workflow" ? "active" : ""}`}
-                onClick={() => setActivePage("run-workflow")}
-              >
-                <span className="nav-ico">RN</span>
-                <span>Run Workflow</span>
-              </button>
+              {canManageWorkflows && (
+                <button
+                  className={`nav-btn ${activePage === "register-workflow" ? "active" : ""}`}
+                  onClick={() => setActivePage("register-workflow")}
+                >
+                  <span className="nav-ico">RG</span>
+                  <span>Register Workflow</span>
+                </button>
+              )}
+              {canRunWorkflows && (
+                <button
+                  className={`nav-btn ${activePage === "run-workflow" ? "active" : ""}`}
+                  onClick={() => setActivePage("run-workflow")}
+                >
+                  <span className="nav-ico">RN</span>
+                  <span>Run Workflow</span>
+                </button>
+              )}
               <button
                 className={`nav-btn ${activePage === "history-dashboard" ? "active" : ""}`}
                 onClick={() => setActivePage("history-dashboard")}
@@ -1054,6 +1111,31 @@ function App() {
               </div>
             </div>
 
+            <div className="card">
+              <h3 className="card-title">Change Password</h3>
+              <label>Current Password</label>
+              <input
+                type="password"
+                value={changePasswordForm.current_password}
+                onChange={(e) =>
+                  setChangePasswordForm((f) => ({ ...f, current_password: e.target.value }))
+                }
+              />
+              <label>New Password</label>
+              <input
+                type="password"
+                value={changePasswordForm.new_password}
+                onChange={(e) =>
+                  setChangePasswordForm((f) => ({ ...f, new_password: e.target.value }))
+                }
+              />
+              <div className="actions">
+                <button className="btn-secondary" onClick={onChangePassword} disabled={busy.changePassword}>
+                  {busy.changePassword ? "Updating..." : "Update Password"}
+                </button>
+              </div>
+            </div>
+
             <button className="btn-danger sidebar-logout" onClick={onLogout}>
               Logout
             </button>
@@ -1065,7 +1147,7 @@ function App() {
               <p className="sub">{pageMeta.description}</p>
             </section>
 
-          {activePage === "register-workflow" && (
+          {activePage === "register-workflow" && canManageWorkflows && (
             <section className="panel page-panel">
               <div className="card">
                 <h3 className="card-title">Source and Metadata</h3>
@@ -1251,7 +1333,7 @@ function App() {
             </section>
           )}
 
-          {activePage === "run-workflow" && (
+          {activePage === "run-workflow" && canRunWorkflows && (
             <section className="run-layout">
               <div className="panel page-panel">
               <div className="card">
@@ -1309,7 +1391,7 @@ function App() {
                   <button
                     className="btn-danger"
                     onClick={deleteSelectedWorkflow}
-                    disabled={!selectedWorkflowId || busy.deleteWorkflow}
+                    disabled={!selectedWorkflowId || busy.deleteWorkflow || !canManageWorkflows}
                   >
                     {busy.deleteWorkflow ? "Deleting..." : "Delete Selected Workflow"}
                   </button>
@@ -1552,13 +1634,14 @@ function App() {
                               <button
                                 className="btn-primary"
                                 onClick={() => prepareRerun(row)}
+                                disabled={!canRunWorkflows}
                               >
                                 Rerun
                               </button>
                               <button
                                 className="btn-danger"
                                 onClick={() => deleteExecution(row.execution_id)}
-                                disabled={busy.deleteId === row.execution_id}
+                                disabled={busy.deleteId === row.execution_id || !canManageWorkflows}
                               >
                                 {busy.deleteId === row.execution_id ? "Deleting..." : "Delete"}
                               </button>

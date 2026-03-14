@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.getenv("APP_DB_PATH", str(BACKEND_DIR / "app.db")))
+VALID_ROLES = {"admin", "runner", "viewer"}
 
 
 def utcnow_iso() -> str:
@@ -86,6 +87,7 @@ def init_db() -> None:
         """
     )
     _ensure_column(cur, "users", "username", "TEXT")
+    _ensure_column(cur, "users", "role", "TEXT NOT NULL DEFAULT 'viewer'")
     _ensure_column(cur, "workflows", "runtime_config_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(cur, "executions", "inputs_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(cur, "executions", "runtime_config_json", "TEXT NOT NULL DEFAULT '{}'")
@@ -93,6 +95,7 @@ def init_db() -> None:
     _ensure_column(cur, "executions", "updated_at", "TEXT NOT NULL DEFAULT ''")
     conn.commit()
     _backfill_usernames(cur)
+    _backfill_roles(cur)
     conn.commit()
     conn.close()
 
@@ -129,33 +132,62 @@ def _make_unique_username(cur: sqlite3.Cursor, base: str) -> str:
         suffix += 1
 
 
+def _backfill_roles(cur: sqlite3.Cursor) -> None:
+    cur.execute("SELECT id, role FROM users ORDER BY id ASC")
+    rows = cur.fetchall()
+    first_user_id = int(rows[0]["id"]) if rows else None
+    for row in rows:
+        role_raw = str(row["role"] or "").strip().lower()
+        role = role_raw if role_raw in VALID_ROLES else ""
+        if not role:
+            role = "admin" if first_user_id is not None and int(row["id"]) == first_user_id else "viewer"
+            cur.execute("UPDATE users SET role = ? WHERE id = ?", (role, int(row["id"])))
+
+
 def _hash_password(password: str, salt_hex: str) -> str:
     salt = bytes.fromhex(salt_hex)
     value = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 150000)
     return value.hex()
 
 
-def create_user(username: str, email: str, password: str) -> Dict[str, Any]:
+def count_users() -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(1) AS c FROM users")
+    row = cur.fetchone()
+    conn.close()
+    return int(row["c"]) if row else 0
+
+
+def create_user(username: str, email: str, password: str, role: str = "runner") -> Dict[str, Any]:
+    role_final = role.strip().lower()
+    if role_final not in VALID_ROLES:
+        raise ValueError("Invalid role.")
     salt_hex = secrets.token_hex(16)
     hashed = _hash_password(password, salt_hex)
     conn = get_conn()
     cur = conn.cursor()
     username_final = _make_unique_username(cur, username)
     cur.execute(
-        "INSERT INTO users(username, email, password_hash, salt, created_at) VALUES (?, ?, ?, ?, ?)",
-        (username_final, email.lower().strip(), hashed, salt_hex, utcnow_iso()),
+        "INSERT INTO users(username, email, password_hash, salt, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (username_final, email.lower().strip(), hashed, salt_hex, role_final, utcnow_iso()),
     )
     conn.commit()
     user_id = cur.lastrowid
     conn.close()
-    return {"user_id": int(user_id), "username": username_final, "email": email.lower().strip()}
+    return {
+        "user_id": int(user_id),
+        "username": username_final,
+        "email": email.lower().strip(),
+        "role": role_final,
+    }
 
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, username, email, password_hash, salt FROM users WHERE email = ?",
+        "SELECT id, username, email, password_hash, salt, role FROM users WHERE email = ?",
         (email.lower().strip(),),
     )
     row = cur.fetchone()
@@ -169,7 +201,7 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, username, email, password_hash, salt FROM users WHERE username = ?",
+        "SELECT id, username, email, password_hash, salt, role FROM users WHERE username = ?",
         (username.strip().lower(),),
     )
     row = cur.fetchone()
@@ -189,6 +221,7 @@ def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
             "user_id": int(user["id"]),
             "username": str(user["username"]),
             "email": str(user["email"]),
+            "role": str(user.get("role") or "viewer"),
         }
     return None
 
@@ -214,6 +247,7 @@ def get_user_by_token(token: str) -> Optional[Dict[str, Any]]:
     cur.execute(
         """
         SELECT u.id, u.username, u.email, s.expires_at
+        , u.role
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token = ?
@@ -237,7 +271,32 @@ def get_user_by_token(token: str) -> Optional[Dict[str, Any]]:
         "user_id": int(row["id"]),
         "username": str(row["username"]),
         "email": str(row["email"]),
+        "role": str(row["role"] or "viewer"),
     }
+
+
+def update_user_password(user_id: int, current_password: str, new_password: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT password_hash, salt FROM users WHERE id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False
+    expected = _hash_password(current_password, str(row["salt"]))
+    if not secrets.compare_digest(expected, str(row["password_hash"])):
+        conn.close()
+        return False
+    new_salt = secrets.token_hex(16)
+    new_hash = _hash_password(new_password, new_salt)
+    cur.execute(
+        "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
+        (new_hash, new_salt, user_id),
+    )
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def delete_session(token: str) -> None:
@@ -279,18 +338,27 @@ def save_workflow(
     conn.close()
 
 
-def list_workflows(user_id: int, engine: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_workflows(user_id: Optional[int], engine: Optional[str] = None) -> List[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
-    if engine:
+    if user_id is not None and engine:
         cur.execute(
             "SELECT id, engine, name, created_at FROM workflows WHERE user_id = ? AND engine = ? ORDER BY created_at DESC",
             (user_id, engine),
         )
-    else:
+    elif user_id is not None:
         cur.execute(
             "SELECT id, engine, name, created_at FROM workflows WHERE user_id = ? ORDER BY created_at DESC",
             (user_id,),
+        )
+    elif engine:
+        cur.execute(
+            "SELECT id, engine, name, created_at FROM workflows WHERE engine = ? ORDER BY created_at DESC",
+            (engine,),
+        )
+    else:
+        cur.execute(
+            "SELECT id, engine, name, created_at FROM workflows ORDER BY created_at DESC",
         )
     rows = cur.fetchall()
     conn.close()
@@ -305,18 +373,29 @@ def list_workflows(user_id: int, engine: Optional[str] = None) -> List[Dict[str,
     ]
 
 
-def get_workflow(user_id: int, workflow_id: str) -> Optional[Dict[str, Any]]:
+def get_workflow(user_id: Optional[int], workflow_id: str) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, engine, name, raw_json, input_schema, created_at
-        , runtime_config_json
-        FROM workflows
-        WHERE user_id = ? AND id = ?
-        """,
-        (user_id, workflow_id),
-    )
+    if user_id is not None:
+        cur.execute(
+            """
+            SELECT id, engine, name, raw_json, input_schema, created_at
+            , runtime_config_json
+            FROM workflows
+            WHERE user_id = ? AND id = ?
+            """,
+            (user_id, workflow_id),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, engine, name, raw_json, input_schema, created_at
+            , runtime_config_json
+            FROM workflows
+            WHERE id = ?
+            """,
+            (workflow_id,),
+        )
     row = cur.fetchone()
     conn.close()
     if not row:
@@ -333,7 +412,7 @@ def get_workflow(user_id: int, workflow_id: str) -> Optional[Dict[str, Any]]:
 
 
 def update_workflow(
-    user_id: int,
+    user_id: Optional[int],
     workflow_id: str,
     name: str,
     raw_json: Dict[str, Any],
@@ -342,33 +421,53 @@ def update_workflow(
 ) -> bool:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE workflows
-        SET name = ?, raw_json = ?, input_schema = ?, runtime_config_json = ?
-        WHERE user_id = ? AND id = ?
-        """,
-        (
-            name,
-            json.dumps(raw_json),
-            json.dumps(input_schema),
-            json.dumps(runtime_config),
-            user_id,
-            workflow_id,
-        ),
-    )
+    if user_id is not None:
+        cur.execute(
+            """
+            UPDATE workflows
+            SET name = ?, raw_json = ?, input_schema = ?, runtime_config_json = ?
+            WHERE user_id = ? AND id = ?
+            """,
+            (
+                name,
+                json.dumps(raw_json),
+                json.dumps(input_schema),
+                json.dumps(runtime_config),
+                user_id,
+                workflow_id,
+            ),
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE workflows
+            SET name = ?, raw_json = ?, input_schema = ?, runtime_config_json = ?
+            WHERE id = ?
+            """,
+            (
+                name,
+                json.dumps(raw_json),
+                json.dumps(input_schema),
+                json.dumps(runtime_config),
+                workflow_id,
+            ),
+        )
     updated = cur.rowcount > 0
     conn.commit()
     conn.close()
     return updated
 
 
-def delete_workflow(user_id: int, workflow_id: str) -> bool:
+def delete_workflow(user_id: Optional[int], workflow_id: str) -> bool:
     conn = get_conn()
     cur = conn.cursor()
-    # Keep history consistent by removing run instances for this workflow.
-    cur.execute("DELETE FROM executions WHERE user_id = ? AND workflow_id = ?", (user_id, workflow_id))
-    cur.execute("DELETE FROM workflows WHERE user_id = ? AND id = ?", (user_id, workflow_id))
+    if user_id is not None:
+        # Keep history consistent by removing run instances for this workflow.
+        cur.execute("DELETE FROM executions WHERE user_id = ? AND workflow_id = ?", (user_id, workflow_id))
+        cur.execute("DELETE FROM workflows WHERE user_id = ? AND id = ?", (user_id, workflow_id))
+    else:
+        cur.execute("DELETE FROM executions WHERE workflow_id = ?", (workflow_id,))
+        cur.execute("DELETE FROM workflows WHERE id = ?", (workflow_id,))
     deleted = cur.rowcount > 0
     conn.commit()
     conn.close()
@@ -449,13 +548,13 @@ def update_execution(
 
 
 def list_executions(
-    user_id: int,
+    user_id: Optional[int],
     workflow_id: Optional[str] = None,
     engine: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
-    if workflow_id and engine:
+    if user_id is not None and workflow_id and engine:
         cur.execute(
             """
             SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
@@ -466,7 +565,7 @@ def list_executions(
             """,
             (user_id, workflow_id, engine),
         )
-    elif workflow_id:
+    elif user_id is not None and workflow_id:
         cur.execute(
             """
             SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
@@ -477,7 +576,7 @@ def list_executions(
             """,
             (user_id, workflow_id),
         )
-    elif engine:
+    elif user_id is not None and engine:
         cur.execute(
             """
             SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
@@ -488,7 +587,7 @@ def list_executions(
             """,
             (user_id, engine),
         )
-    else:
+    elif user_id is not None:
         cur.execute(
             """
             SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
@@ -498,6 +597,48 @@ def list_executions(
             LIMIT 100
             """,
             (user_id,),
+        )
+    elif workflow_id and engine:
+        cur.execute(
+            """
+            SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
+            FROM executions
+            WHERE workflow_id = ? AND engine = ?
+            ORDER BY created_at DESC
+            LIMIT 100
+            """,
+            (workflow_id, engine),
+        )
+    elif workflow_id:
+        cur.execute(
+            """
+            SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
+            FROM executions
+            WHERE workflow_id = ?
+            ORDER BY created_at DESC
+            LIMIT 100
+            """,
+            (workflow_id,),
+        )
+    elif engine:
+        cur.execute(
+            """
+            SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
+            FROM executions
+            WHERE engine = ?
+            ORDER BY created_at DESC
+            LIMIT 100
+            """,
+            (engine,),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
+            FROM executions
+            ORDER BY created_at DESC
+            LIMIT 100
+            """
         )
     rows = cur.fetchall()
     conn.close()
@@ -519,17 +660,27 @@ def list_executions(
     ]
 
 
-def get_execution(user_id: int, execution_id: int) -> Optional[Dict[str, Any]]:
+def get_execution(user_id: Optional[int], execution_id: int) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
-        FROM executions
-        WHERE user_id = ? AND id = ?
-        """,
-        (user_id, execution_id),
-    )
+    if user_id is not None:
+        cur.execute(
+            """
+            SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
+            FROM executions
+            WHERE user_id = ? AND id = ?
+            """,
+            (user_id, execution_id),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, workflow_id, engine, status, stage, message, output_json, inputs_json, runtime_config_json, created_at, updated_at
+            FROM executions
+            WHERE id = ?
+            """,
+            (execution_id,),
+        )
     row = cur.fetchone()
     conn.close()
     if not row:
@@ -549,10 +700,13 @@ def get_execution(user_id: int, execution_id: int) -> Optional[Dict[str, Any]]:
     }
 
 
-def delete_execution(user_id: int, execution_id: int) -> bool:
+def delete_execution(user_id: Optional[int], execution_id: int) -> bool:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("DELETE FROM executions WHERE user_id = ? AND id = ?", (user_id, execution_id))
+    if user_id is not None:
+        cur.execute("DELETE FROM executions WHERE user_id = ? AND id = ?", (user_id, execution_id))
+    else:
+        cur.execute("DELETE FROM executions WHERE id = ?", (execution_id,))
     deleted = cur.rowcount > 0
     conn.commit()
     conn.close()
