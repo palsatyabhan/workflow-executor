@@ -814,6 +814,27 @@ pre.output.mini {
   background: linear-gradient(180deg, #131d34 0%, #0f172a 100%);
 }
 
+:root[data-theme="dark"] .kpi-value {
+  color: #eaf2ff;
+}
+
+:root[data-theme="dark"] .hero-platform .brand-mark,
+:root[data-theme="dark"] .supported-engine .brand-mark,
+:root[data-theme="dark"] .workspace-engine .engine-logo,
+:root[data-theme="dark"] .engine-preview .engine-logo,
+:root[data-theme="dark"] .engine-cell .engine-logo {
+  background: #f8fbff;
+  border: 1px solid #2d3e61;
+  padding: 2px;
+  border-radius: 6px;
+}
+
+:root[data-theme="dark"] .workspace-engine .engine-logo.sm,
+:root[data-theme="dark"] .engine-cell .engine-logo.sm {
+  padding: 1px;
+  border-radius: 5px;
+}
+
 :root[data-theme="dark"] .nav-btn,
 :root[data-theme="dark"] .btn-secondary {
   background: #1a2642;
