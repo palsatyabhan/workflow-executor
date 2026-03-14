@@ -5,6 +5,13 @@ import n8nLogo from "./assets/n8n-logo.svg";
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const EMPTY_REGISTER = { username: "", email: "", password: "" };
 const EMPTY_LOGIN = { username: "", password: "" };
+const MASKED_SECRET_MIN_LENGTH = 8;
+
+function maskSecret(secret) {
+  const value = (secret || "").trim();
+  if (!value) return "";
+  return "*".repeat(Math.max(MASKED_SECRET_MIN_LENGTH, value.length));
+}
 
 function App() {
   const [authToken, setAuthToken] = useState(localStorage.getItem("auth_token") || "");
@@ -43,6 +50,8 @@ function App() {
     langflow_run_url: "",
     langflow_api_key: ""
   });
+  const [editStoredLangflowApiKey, setEditStoredLangflowApiKey] = useState("");
+  const [editLangflowApiKeyDirty, setEditLangflowApiKeyDirty] = useState(false);
 
   const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
   const [runSchema, setRunSchema] = useState([]);
@@ -405,6 +414,8 @@ function App() {
       langflow_run_url: "",
       langflow_api_key: ""
     });
+    setEditStoredLangflowApiKey("");
+    setEditLangflowApiKeyDirty(false);
     setOutputText("");
     setOutputFullText("");
     setShowFullOutput(false);
@@ -532,29 +543,36 @@ function App() {
         n8n_webhook_url: editRuntime.n8n_webhook_url.trim()
       };
     }
+    const typedApiKey = editRuntime.langflow_api_key.trim();
+    const effectiveApiKey = editLangflowApiKeyDirty ? typedApiKey : editStoredLangflowApiKey.trim();
     return {
       langflow_run_url: editRuntime.langflow_run_url.trim(),
-      langflow_api_key: editRuntime.langflow_api_key.trim()
+      langflow_api_key: effectiveApiKey
     };
   }
 
-  async function loadWorkflowForEdit() {
-    if (!editWorkflowId) {
+  async function loadWorkflowForEdit(workflowId = editWorkflowId, { silent = false } = {}) {
+    if (!workflowId) {
       notify("Select a workflow to edit first.", "error");
       return;
     }
     setBusy((b) => ({ ...b, loadEditWorkflow: true }));
     try {
-      const workflow = await api(`/api/workflows/${encodeURIComponent(editWorkflowId)}`);
+      const workflow = await api(`/api/workflows/${encodeURIComponent(workflowId)}`);
+      const loadedApiKey = workflow.runtime_config?.langflow_api_key || "";
       setEditEngine(workflow.engine);
       setEditName(workflow.name || "");
       setEditJsonText(JSON.stringify(workflow.raw_json || {}, null, 2));
       setEditRuntime({
         n8n_webhook_url: workflow.runtime_config?.n8n_webhook_url || "",
         langflow_run_url: workflow.runtime_config?.langflow_run_url || "",
-        langflow_api_key: workflow.runtime_config?.langflow_api_key || ""
+        langflow_api_key: maskSecret(loadedApiKey)
       });
-      notify("Workflow loaded for editing.", "success");
+      setEditStoredLangflowApiKey(loadedApiKey);
+      setEditLangflowApiKeyDirty(false);
+      if (!silent) {
+        notify("Workflow loaded for editing.", "success");
+      }
     } catch (err) {
       notify(err.message, "error");
     } finally {
@@ -824,6 +842,8 @@ function App() {
           langflow_run_url: "",
           langflow_api_key: ""
         });
+        setEditStoredLangflowApiKey("");
+        setEditLangflowApiKeyDirty(false);
       }
       setOutputText("");
       setOutputFullText("");
@@ -1127,7 +1147,27 @@ function App() {
                 <div className="grid-2">
                   <div>
                     <label>Select Workflow</label>
-                    <select value={editWorkflowId} onChange={(e) => setEditWorkflowId(e.target.value)}>
+                    <select
+                      value={editWorkflowId}
+                      onChange={(e) => {
+                        const workflowId = e.target.value;
+                        setEditWorkflowId(workflowId);
+                        if (!workflowId) {
+                          setEditEngine("n8n");
+                          setEditName("");
+                          setEditJsonText("");
+                          setEditRuntime({
+                            n8n_webhook_url: "",
+                            langflow_run_url: "",
+                            langflow_api_key: ""
+                          });
+                          setEditStoredLangflowApiKey("");
+                          setEditLangflowApiKeyDirty(false);
+                          return;
+                        }
+                        void loadWorkflowForEdit(workflowId, { silent: true });
+                      }}
+                    >
                       <option value="">Select workflow</option>
                       {workflows.map((w) => (
                         <option key={w.workflow_id} value={w.workflow_id}>
@@ -1137,13 +1177,13 @@ function App() {
                     </select>
                   </div>
                   <div className="actions align-end">
-                    <button
-                      className="btn-secondary"
-                      onClick={loadWorkflowForEdit}
-                      disabled={!editWorkflowId || busy.loadEditWorkflow}
-                    >
-                      {busy.loadEditWorkflow ? "Loading..." : "Load for Edit"}
-                    </button>
+                    <div className="meta">
+                      {busy.loadEditWorkflow
+                        ? "Loading selected workflow..."
+                        : editWorkflowId
+                          ? "Loaded automatically on selection"
+                          : "Select a workflow to edit"}
+                    </div>
                   </div>
                 </div>
 
@@ -1179,9 +1219,12 @@ function App() {
                         <input
                           type="password"
                           value={editRuntime.langflow_api_key}
-                          onChange={(e) =>
-                            setEditRuntime((r) => ({ ...r, langflow_api_key: e.target.value }))
-                          }
+                          onChange={(e) => {
+                            setEditLangflowApiKeyDirty(true);
+                            setEditRuntime((r) => ({ ...r, langflow_api_key: e.target.value }));
+                          }}
+                          placeholder="********"
+                          autoComplete="new-password"
                         />
                       </>
                     )}
@@ -1201,7 +1244,7 @@ function App() {
                 ) : (
                   <div className="empty-state output-empty">
                     <div className="empty-title">No workflow selected for edit</div>
-                    <div className="meta">Select a workflow and click "Load for Edit" to modify JSON or config.</div>
+                    <div className="meta">Select a workflow to modify JSON or runtime config.</div>
                   </div>
                 )}
               </div>
