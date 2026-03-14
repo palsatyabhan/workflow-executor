@@ -1,0 +1,94 @@
+{
+  "name": "Simple Webhook AI Chat",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "2fbd8903-6041-4908-97f0-cef61c6c2ec4",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        720
+      ],
+      "webhookId": "e22743f5-686b-40f6-affa-32364cfa1521"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.text }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -144,
+        704
+      ],
+      "id": "2bc8aa97-fe87-4a4d-b7ab-0c3c255e2f42",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        -288,
+        912
+      ],
+      "id": "751bb5c3-8671-45a8-b7cd-a0b8c0f532cd",
+      "name": "Ollama Chat Model",
+      "credentials": {
+        "ollamaApi": {
+          "id": "00xUa540HqGcx8VL",
+          "name": "Ollama account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "61219eef-29c7-4409-88e5-1af6b66d69e0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "b0215d6be3f74e55bbe1f9191d36b3ad9a8a04f4c059386a07eafbcd18987300"
+  },
+  "id": "B3uaiPnnV641Atbv",
+  "tags": []
+}
